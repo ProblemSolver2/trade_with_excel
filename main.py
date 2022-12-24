@@ -1,78 +1,66 @@
 from kiteconnect import KiteConnect
-import time, datetime, json, sys, os
+import time, datetime, json, sys, os, yaml
 import xlwings as xw
 import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.by import By
+from pyotp import TOTP
+from pathlib import Path
 
 
-def get_login_credentials():
-    global login_credential
-
-    def login_credentials():
-        print("Enter your Zerodha login credentials...")
-        login_credential = {
-            "api_key": str(input("Enter API key: ")),
-            "api_secret": str(input("Enter API Secret :"))
-        }
-        if str(input("Enter y/Y to save login credential: ")).upper() == 'Y':
-            with open(f"Login_Credentials.txt", "w") as f:
-                json.dump(login_credential, f)
-            print("data saved.")
-        else:
-            print("data will not be saved")
-
-    while True:
-        try:
-            with open(f"Login_Credentials.txt", "r") as f:
-                login_credential = json.load(f)
-            break
-        except (OSError, Exception) as err:
-            print(f"Unexpected {err=}, {type(err)=}")
-            login_credentials()
-
-
-def get_access_token():
-    global access_token
-
-    def login():
-        global login_credential
-        print("Trying loging in...")
-        kite = KiteConnect(api_key=login_credential["api_key"])
-        print("Login URL: ", kite.login_url())
-        request_token = str(input("Enter request token : "))
-        try:
-            access_token = kite.generate_session(
-                request_token=request_token,
-                api_secret=login_credential["api_secret"]
-            )["access_token"]
-            os.makedirs(f"AccessToken", exist_ok=True)
-            with open(f"AccessToken/{datetime.datetime.now().date()}.json", "w") as f:
-                json.dump(access_token, f)
-            print("Login successful!")
-        except (OSError, Exception) as err:
-            print(f"Unexpected {err=}, {type(err)=}")
-            print("Login failed!")
-
-    print("Loading access token...")
-    while True:
-        if os.path.exists(f"AccessToken/{datetime.datetime.now().date()}.json"):
-            with open(f"AccessToken/{datetime.datetime.now().date()}.json", "r") as f:
-                access_token = json.load(f)
-            break
-        else:
-            login()
-    return access_token
-
-
-def get_kite():
+def login_with_zerodha():
     global kite, login_credential, access_token
+
     try:
-        kite = KiteConnect(api_key=login_credential["api_key"])
-        kite.set_access_token(access_token)
+
+        with open("config/config.yaml") as f:
+            login_credential = yaml.load(f, Loader=yaml.FullLoader)
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        driver.get(f'https://kite.trade/connect/login?api_key={login_credential["zerodha"]["api_key"]}&v=3')
+        driver.maximize_window()
+        login_id = WebDriverWait(driver, 10).until(lambda x: x.find_element('xpath', 'html/body/div[1]/div/div[2]/div[1]/div/div/div[2]/form/div[1]/input'))
+        pwd = WebDriverWait(driver, 10).until(lambda x: x.find_element('xpath', 'html/body/div[1]/div/div[2]/div[1]/div/div/div[2]/form/div[2]/input'))
+        login_id.send_keys(login_credential["zerodha"]["user_id"])
+        pwd.send_keys(login_credential["zerodha"]["user_pwd"])
+
+        submit = WebDriverWait(driver, 10).until(
+            lambda x: x.find_element('xpath', '//*[@id="container"]/div/div/div[2]/form/div[4]/button'))
+        submit.click()
+
+        time.sleep(1)
+        # adjustment to code to include totp
+        totp = WebDriverWait(driver, 10).until(lambda x: x.find_element('xpath', '/html/body/div[1]/div/div[2]/div[1]/div/div/div[2]/form/div[2]/input'))
+
+        authkey = TOTP(login_credential["zerodha"]["totp_key"]).now()
+        totp.send_keys(authkey)
+        # adjustment complete
+
+        continue_btn = WebDriverWait(driver, 10).until(
+            lambda x: x.find_element('xpath', '//*[@id="container"]/div/div/div[2]/form/div[3]/button'))
+        continue_btn.click()
+        time.sleep(5)
+        url = driver.current_url
+        initial_token = url.split('request_token=')[1]
+        request_token = initial_token.split('&')[0]
+        driver.close()
+        kite = KiteConnect(api_key=login_credential["zerodha"]["api_key"])
+        # print(request_token)
+        data = kite.generate_session(request_token, api_secret=login_credential["zerodha"]["api_secret"])
+        access_token = data['access_token']
+        kite.set_access_token(data['access_token'])
     except Exception as err:
         print(f"Unexpected {err=}, {type(err)=}")
-        os.remove(f"AccessToken/{datetime.datetime.now().date()}.json") if os.path.exists(
-            f"AccessToken/{datetime.datetime.now().date()}.json") else sys.exit()
         sys.exit()
+    print("Login success")
+    return kite
 
 
 def get_live_data(instruments):
@@ -239,9 +227,7 @@ def start_excel():
 
 
 if __name__ == '__main__':
-    get_login_credentials()
-    get_access_token()
-    get_kite()
+    login_with_zerodha()
     get_order_book()
     start_excel()
 
