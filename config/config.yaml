@@ -1,0 +1,6 @@
+zerodha:
+  api_key: abc
+  api_secret: abc
+  user_id: abc
+  user_pwd: abc
+  totp_key: abc
